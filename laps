@@ -1,0 +1,76 @@
+# LAPS Script
+
+$LocalAdminUsername = "admin"
+$CustomFieldName = "LAPS"
+
+function Get-RandomPassword {
+    param (
+        [Parameter(Mandatory)]
+        [ValidateRange(4,[int]::MaxValue)]
+        [int] $length,
+        [int] $upper = 1,
+        [int] $lower = 1,
+        [int] $numeric = 1,
+        [int] $special = 1
+    )
+    if($upper + $lower + $numeric + $special -gt $length) {
+        throw "Number of upper/lower/numeric/special characters must be lower or equal to length."
+    }
+    $uCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    $lCharSet = "abcdefghijklmnopqrstuvwxyz"
+    $nCharSet = "0123456789"
+    $sCharSet = "-!?=@_"
+    $charSet = ""
+    if($upper -gt 0) { $charSet += $uCharSet }
+    if($lower -gt 0) { $charSet += $lCharSet }
+    if($numeric -gt 0) { $charSet += $nCharSet }
+    if($special -gt 0) { $charSet += $sCharSet }
+    
+    $charSet = $charSet.ToCharArray()
+    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+    $bytes = New-Object byte[]($length)
+    $rng.GetBytes($bytes)
+ 
+    $result = New-Object char[]($length)
+    for ($i = 0 ; $i -lt $length ; $i++) {
+        $result[$i] = $charSet[$bytes[$i] % $charSet.Length]
+    }
+    $password = (-join $result)
+    $valid = $true
+    if($upper   -gt ($password.ToCharArray() | Where-Object {$_ -cin $uCharSet.ToCharArray() }).Count) { $valid = $false }
+    if($lower   -gt ($password.ToCharArray() | Where-Object {$_ -cin $lCharSet.ToCharArray() }).Count) { $valid = $false }
+    if($numeric -gt ($password.ToCharArray() | Where-Object {$_ -cin $nCharSet.ToCharArray() }).Count) { $valid = $false }
+    if($special -gt ($password.ToCharArray() | Where-Object {$_ -cin $sCharSet.ToCharArray() }).Count) { $valid = $false }
+    if(!$valid) {
+         $password = Get-RandomPassword $length $upper $lower $numeric $special
+    }
+    return $password
+}
+
+$NewPW = Get-RandomPassword 10
+
+if($(Get-CimInstance -ClassName Win32_OperatingSystem).ProductType -ne 3) { #1 - Workstation - 2 - Domain Controller - 3 - Server
+  $isLocalUserCreated = Get-LocalUser -name $LocalAdminUsername -ErrorAction SilentlyContinue
+  if ($null -eq $isLocalUserCreated) {
+    write-host "Creating Local Admin with: $localAdminUsername"
+    $null = New-LocalUser -Name $LocalAdminUsername -Password $($NewPW | ConvertTo-SecureString -AsPlainText -Force) -PasswordNeverExpires:$true -AccountNeverExpires:$true | Out-Null
+    $null = Add-LocalGroupMember -Member $LocalAdminUsername -SID "S-1-5-32-544" | Out-Null #builtin Administrators
+    $null = Add-LocalGroupMember -Member $LocalAdminUsername -SID "S-1-5-32-545" | Out-Null #builtin Users
+    $null = Disable-LocalUser -Name "Administrator"
+  } else {
+    if ($null -eq $($(Get-LocalGroupMember -SID "S-1-5-32-544").where({$_.principalSource -eq "Local" -and $_.Name -like "*\$LocalAdminUserName"}))) {
+      write-host "Re-adding Local Admin Rights!"
+      Add-LocalGroupMember -Member $LocalAdminUsername -SID "S-1-5-32-544"
+    }
+  }
+  write-host "Updating Password"
+  try {
+    Set-LocalUser -Name $LocalAdminUsername -Password $($NewPW | ConvertTo-SecureString -AsPlainText -Force) -PasswordNeverExpires:$true -AccountNeverExpires:$true
+  } catch {
+    Write-Error "There was an error updating the password."
+    Write-Error $_
+    Exit 1
+  }
+  Ninja-Property-get $CustomFieldName 2>&1>$null
+  Ninja-Property-Set $CustomFieldName $NewPW | out-null
+}
